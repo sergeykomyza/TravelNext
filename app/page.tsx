@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { useTokenStatsContext } from './context/TokenStatsContext';
+import { TokenStats } from './components/TokenStats';
 
 interface ChecklistItem {
   task: string;
@@ -22,6 +24,8 @@ interface TravelPlan {
 }
 
 export default function Home() {
+  const { addTokenUsage } = useTokenStatsContext();
+
   const [formData, setFormData] = useState({
     departureCity: '',
     destination: 'Вьетнам',
@@ -32,6 +36,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [travelPlan, setTravelPlan] = useState<TravelPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastModel, setLastModel] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,7 +59,22 @@ export default function Home() {
       }
 
       const data = await response.json();
-      setTravelPlan(data);
+
+      // Extract token usage information if available
+      if (data._tokenUsage && data._model) {
+        addTokenUsage(
+          data._model,
+          data._tokenUsage.inputTokens,
+          data._tokenUsage.outputTokens,
+          'generate-travel-plan',
+          false
+        );
+        setLastModel(data._model);
+      }
+
+      // Remove token usage data from the response before setting travel plan
+      const { _tokenUsage, _model, ...travelPlanData } = data;
+      setTravelPlan(travelPlanData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -226,6 +246,8 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      <TokenStats />
     </div>
   );
 }

@@ -75,7 +75,18 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    return NextResponse.json(jsonContent);
+    // Extract usage information
+    const usage = response.usage ? {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+    } : null;
+
+    return NextResponse.json({
+      ...jsonContent,
+      _tokenUsage: usage,
+      _model: response.model,
+    });
   } catch (error) {
     console.error('Error generating travel plan:', error);
     return NextResponse.json(
