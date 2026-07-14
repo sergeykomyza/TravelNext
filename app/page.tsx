@@ -60,8 +60,17 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate travel plan');
+        let errorData: { error?: string; details?: string } = {};
+        try {
+          errorData = await response.json();
+        } catch {
+          // ответ не в JSON — оставляем пустой объект
+        }
+        // Показываем реальную причину из `details`, иначе виден только общий текст
+        const message = errorData.details
+          ? `${errorData.error || 'Ошибка'}: ${errorData.details}`
+          : errorData.error || 'Failed to generate travel plan';
+        throw new Error(message);
       }
 
       const data = await response.json();

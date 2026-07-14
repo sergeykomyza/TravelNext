@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { getEmbedding } from '@/lib/embeddings';
 import { getSupabase } from '@/lib/supabase';
+
+// Vercel serverless: холодный старт (@xenova/transformers + Anthropic) требует
+// запаса по времени, иначе первый запрос упирается в дефолтный таймаут функции.
+export const maxDuration = 60;
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
@@ -22,6 +25,12 @@ async function retrieveContext(query: string): Promise<{ context: string; usedRa
   }
 
   try {
+    // Динамический импорт изолирует тяжёлый ONNX-модуль (@xenova/transformers):
+    // он подгружается только когда RAG реально нужен. Статический import тянул бы
+    // onnxruntime-node на старте маршрута — в serverless нативные .so не bundled,
+    // модуль падал и валил весь маршрут (HTML 500). Здесь любая ошибка загрузки
+    // ловится нижним catch → graceful fallback на общие знания модели.
+    const { getEmbedding } = await import('@/lib/embeddings');
     // Генерируем embedding для поискового запроса
     const queryEmbedding = await getEmbedding(query);
     const vectorString = JSON.stringify(queryEmbedding);
@@ -94,6 +103,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Missing required fields: departureCity, date, budget' },
         { status: 400 }
+      );
+    }
+
+    // Явная проверка ключа — без неё SDK вернёт непонятную ошибку 401.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return NextResponse.json(
+        {
+          error: 'Не задан ANTHROPIC_API_KEY',
+          details:
+            'Добавьте переменные окружения в настройках деплоя (Vercel → Settings → Environment Variables). Нужны все 5: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, SUPABASE_URL, SUPABASE_ANON_KEY.',
+        },
+        { status: 500 }
       );
     }
 
