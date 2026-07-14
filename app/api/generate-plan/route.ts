@@ -179,7 +179,9 @@ ${ragContext}
       // z.ai обслуживает GLM-модели, не Claude. Валидные id: glm-5.2, glm-4.7,
       // glm-4.6, glm-4.5, glm-4.5-air (см. https://docs.z.ai). claude-* → 400 "Unknown Model".
       model: process.env.ANTHROPIC_MODEL || 'glm-4.6',
-      max_tokens: 2000,
+      // Подробный план (8+ шагов с actions/links) на русском токеноёмок;
+      // 2000 обрезали JSON посередине → JSON.parse падал → пустой план. Даём запас.
+      max_tokens: 6000,
       messages: [
         {
           role: 'user',
@@ -199,22 +201,43 @@ ${ragContext}
     // Попытка распарсить JSON из ответа
     let jsonContent;
     try {
-      // Извлекаем JSON из ответа, если модель обернула его в markdown
-      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) || content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        jsonContent = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-      } else {
-        jsonContent = JSON.parse(content);
+      // Убираем markdown-обёртку (```json ... ```), если модель её добавила —
+      // причём толерантно к пробелам/регистру (старая регулярка требовала \n сразу после json).
+      let cleaned = content.trim();
+      const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) cleaned = fenceMatch[1].trim();
+      // Берём подстроку от первой { до последней } — отсекает лишний текст вокруг.
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        cleaned = cleaned.slice(firstBrace, lastBrace + 1);
       }
+      jsonContent = JSON.parse(cleaned);
+      // Гарантируем массивы для UI — иначе .map падает при рендере
+      if (!Array.isArray(jsonContent.steps)) jsonContent.steps = [];
+      jsonContent.steps.forEach((s: Record<string, unknown>) => {
+        if (!Array.isArray(s.actions)) s.actions = [];
+        if (!Array.isArray(s.links)) s.links = [];
+      });
+      if (!Array.isArray(jsonContent.tips)) jsonContent.tips = [];
       console.log('✅ JSON успешно распарсен');
     } catch (parseError) {
-      // Если не удалось распарсить JSON, возвращаем текстовый ответ
+      // Если всё-таки не распарсилось — не оставляем страницу пустой:
+      // кладём сырой ответ модели в один шаг, чтобы пользователь видел хоть что-то.
       console.warn('⚠️  Не удалось распарсить JSON:', parseError);
-      console.warn('⚠️  Будет возвращён текстовый ответ в description');
       jsonContent = {
         title: 'План путешествия',
-        description: content,
-        checklist: [],
+        steps: [
+          {
+            id: 'raw_response',
+            title: '⚠️ Модель вернула ответ в неожиданном формате',
+            description: content,
+            actions: [],
+            links: [],
+            cost: 0,
+            isCompleted: false,
+          },
+        ],
         tips: [],
       };
     }
