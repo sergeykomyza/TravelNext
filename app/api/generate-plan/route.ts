@@ -171,7 +171,9 @@ ${ragContext}
 7. actions должен содержать конкретные действия, которые нужно выполнить`;
 
     const response = await anthropic.messages.create({
-      model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
+      // z.ai обслуживает GLM-модели, не Claude. Валидные id: glm-5.2, glm-4.7,
+      // glm-4.6, glm-4.5, glm-4.5-air (см. https://docs.z.ai). claude-* → 400 "Unknown Model".
+      model: process.env.ANTHROPIC_MODEL || 'glm-4.6',
       max_tokens: 2000,
       messages: [
         {
