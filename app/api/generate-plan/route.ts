@@ -15,13 +15,15 @@ const anthropic = new Anthropic({
  * Выполняет RAG-поиск релевантных документов через Supabase
  * @returns {context, usedRag} - контекст из БД или пустая строка + флаг успеха
  */
-async function retrieveContext(query: string): Promise<{ context: string; usedRag: boolean }> {
+async function retrieveContext(
+  query: string
+): Promise<{ context: string; usedRag: boolean; ragReason: string }> {
   const supabase = getSupabase();
 
   // Если Supabase не подключена - работаем без RAG
   if (!supabase) {
     console.warn('RAG: Supabase не подключена, работаем без базы знаний');
-    return { context: '', usedRag: false };
+    return { context: '', usedRag: false, ragReason: 'no_supabase_env' };
   }
 
   try {
@@ -48,14 +50,14 @@ async function retrieveContext(query: string): Promise<{ context: string; usedRa
       // Если RPC функция не существует, fallback на обычный поиск
       if (error.message.includes('function') || error.code === '42883') {
         console.warn('RAG: RPC функция match_documents не найдена. Выполните init-db.sql в Supabase SQL Editor');
-        return { context: '', usedRag: false };
+        return { context: '', usedRag: false, ragReason: 'no_match_documents_rpc' };
       }
       throw error;
     }
 
     if (!rows || rows.length === 0) {
       console.warn('RAG: релевантные документы не найдены');
-      return { context: '', usedRag: false };
+      return { context: '', usedRag: false, ragReason: 'no_matching_docs' };
     }
 
     // Расширяем до полных документов: если хоть один чанк файла совпал с
@@ -87,10 +89,13 @@ async function retrieveContext(query: string): Promise<{ context: string; usedRa
       `RAG: совпало ${rows.length} чанков, расширено до ${docsByFile.size} полных документов:`,
       matchedFiles
     );
-    return { context, usedRag: true };
+    return { context, usedRag: true, ragReason: 'ok' };
   } catch (error) {
+    const reason = error instanceof Error
+      ? error.message.split('\n')[0].slice(0, 200)
+      : String(error).slice(0, 200);
     console.warn('RAG: ошибка при поиске, fallback на общие знания:', error);
-    return { context: '', usedRag: false };
+    return { context: '', usedRag: false, ragReason: `embeddings_error: ${reason}` };
   }
 }
 
@@ -122,7 +127,7 @@ export async function POST(request: NextRequest) {
     const searchQuery = `Путешествие в ${destination || 'Вьетнам'}, вылет из ${departureCity}, дата ${date}, бюджет ${budget}$. Темы: виза, страховка, билеты, отель, трансфер, связь, вещи, аэропорт.`;
 
     // Выполняем RAG-поиск релевантных документов
-    const { context, usedRag } = await retrieveContext(searchQuery);
+    const { context, usedRag, ragReason } = await retrieveContext(searchQuery);
 
     // Базовый промпт (общие знания)
     let ragContext = '';
@@ -226,6 +231,7 @@ ${ragContext}
       _tokenUsage: usage,
       _model: response.model,
       _usedRag: usedRag,
+      _ragReason: ragReason,
     });
   } catch (error) {
     console.error('Error generating travel plan:', error);
