@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "index": "tsx scripts/index-knowledge.ts"
+    "index": "tsx scripts/index-knowledge.ts",
+    "migrate": "tsx scripts/migrate-to-db.ts",
+    "reindex-all": "tsx scripts/reindex-all.ts",
+    "reindex-changed": "tsx scripts/reindex-changed.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
