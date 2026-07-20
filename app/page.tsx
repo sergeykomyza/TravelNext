@@ -1,8 +1,30 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTokenStatsContext } from './context/TokenStatsContext';
 import { TokenStats } from './components/TokenStats';
+
+// Список доступных локаций. Чтобы добавить новый город/страну — просто допишите значение в массив.
+const DEPARTURE_CITIES = ['Москва'];
+const DESTINATIONS = ['Вьетнам'];
+
+// Сообщения, которые по очереди показывает анимация загрузки.
+const LOADING_MESSAGES = [
+  '✈️ Подбираем оптимальный маршрут...',
+  '📚 Изучаем базу знаний о пункте назначения...',
+  '🏨 Ищем лучшие варианты отелей и трансфера...',
+  '📋 Составляем пошаговый план действий...',
+  '⏳ Осталось совсем немного — генерация может занять до минуты...',
+];
+
+// Склонение слова «день» по числу (1 день / 2 дня / 5 дней).
+function pluralizeDays(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'день';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'дня';
+  return 'дней';
+}
 
 interface Link {
   text: string;
@@ -30,18 +52,42 @@ export default function Home() {
   const { addTokenUsage } = useTokenStatsContext();
 
   const [formData, setFormData] = useState({
-    departureCity: '',
-    destination: 'Вьетнам',
-    date: '',
+    departureCity: DEPARTURE_CITIES[0],
+    destination: DESTINATIONS[0],
+    startDate: '',
+    endDate: '',
     budget: '',
   });
 
   const [loading, setLoading] = useState(false);
+  const [loadingPhase, setLoadingPhase] = useState(0);
   const [travelPlan, setTravelPlan] = useState<TravelPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastModel, setLastModel] = useState<string | null>(null);
   const [usedRag, setUsedRag] = useState<boolean | null>(null);
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
+
+  // Сколько дней длится поездка (включительно по обе даты).
+  const tripDays = useMemo(() => {
+    if (!formData.startDate || !formData.endDate) return 0;
+    const start = new Date(formData.startDate);
+    const end = new Date(formData.endDate);
+    const diffMs = end.getTime() - start.getTime();
+    if (diffMs < 0) return 0;
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
+  }, [formData.startDate, formData.endDate]);
+
+  // Пока идёт генерация — крутим по очереди сообщения загрузки.
+  useEffect(() => {
+    if (!loading) {
+      setLoadingPhase(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setLoadingPhase((p) => (p + 1) % LOADING_MESSAGES.length);
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [loading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,7 +144,7 @@ export default function Home() {
     }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
@@ -152,46 +198,71 @@ export default function Home() {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Город вылета
                 </label>
-                <input
-                  type="text"
+                <select
                   name="departureCity"
                   value={formData.departureCity}
                   onChange={handleChange}
-                  required
-                  placeholder="Москва"
                   className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
+                >
+                  {DEPARTURE_CITIES.map((city) => (
+                    <option key={city} value={city}>{city}</option>
+                  ))}
+                </select>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Пункт назначения
                 </label>
-                <input
-                  type="text"
+                <select
                   name="destination"
                   value={formData.destination}
                   onChange={handleChange}
-                  placeholder="Вьетнам"
                   className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
+                >
+                  {DESTINATIONS.map((dest) => (
+                    <option key={dest} value={dest}>{dest}</option>
+                  ))}
+                </select>
               </div>
 
-              <div>
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Дата поездки
+                  Период поездки
                 </label>
-                <input
-                  type="date"
-                  name="date"
-                  value={formData.date}
-                  onChange={handleChange}
-                  required
-                  className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <input
+                      type="date"
+                      name="startDate"
+                      value={formData.startDate}
+                      onChange={handleChange}
+                      required
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    />
+                    <span className="block mt-1 text-xs text-gray-400 dark:text-gray-500">Дата вылета</span>
+                  </div>
+                  <div>
+                    <input
+                      type="date"
+                      name="endDate"
+                      value={formData.endDate}
+                      onChange={handleChange}
+                      required
+                      min={formData.startDate || undefined}
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    />
+                    <span className="block mt-1 text-xs text-gray-400 dark:text-gray-500">Дата возвращения</span>
+                  </div>
+                </div>
+                <p className={`mt-2 text-sm font-medium ${tripDays > 0 ? 'text-blue-600 dark:text-blue-300' : 'text-gray-400 dark:text-gray-500'}`}>
+                  {tripDays > 0
+                    ? `📅 Длительность поездки: ${tripDays} ${pluralizeDays(tripDays)}`
+                    : 'Выберите дату вылета и дату возвращения'}
+                </p>
               </div>
 
-              <div>
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Бюджет ($)
                 </label>
@@ -216,6 +287,28 @@ export default function Home() {
               {loading ? '🔄 Генерация плана...' : '✨ Сгенерировать план'}
             </button>
           </form>
+
+          {loading && (
+            <div className="mb-8 bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8">
+              <div className="flex flex-col items-center gap-4 text-center">
+                <div className="text-6xl animate-float">✈️</div>
+                <h3 className="text-xl font-bold text-gray-800 dark:text-white">
+                  Составляем ваш идеальный план...
+                </h3>
+                <p className="text-gray-600 dark:text-gray-300 min-h-[1.5rem]">
+                  {LOADING_MESSAGES[loadingPhase]}
+                </p>
+                <div className="flex gap-2">
+                  <span className="w-3 h-3 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                  <span className="w-3 h-3 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                  <span className="w-3 h-3 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                </div>
+                <div className="w-full max-w-md h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden relative">
+                  <div className="absolute top-0 left-0 h-full w-1/3 rounded-full bg-gradient-to-r from-blue-400 to-cyan-400 animate-loading-shimmer"></div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-8">

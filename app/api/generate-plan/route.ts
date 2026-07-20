@@ -102,11 +102,11 @@ async function retrieveContext(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { departureCity, date, budget, destination } = body;
+    const { departureCity, destination, startDate, endDate, budget } = body;
 
-    if (!departureCity || !date || !budget) {
+    if (!departureCity || !startDate || !budget) {
       return NextResponse.json(
-        { error: 'Missing required fields: departureCity, date, budget' },
+        { error: 'Missing required fields: departureCity, startDate, budget' },
         { status: 400 }
       );
     }
@@ -123,11 +123,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Форматируем дату для отображения (YYYY-MM-DD)
-    const formattedDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+    // Форматируем даты для отображения (YYYY-MM-DD) и считаем длительность поездки
+    const startDateObj = startDate ? new Date(startDate) : new Date();
+    const formattedStartDate = startDateObj.toISOString().split('T')[0];
+    let formattedEndDate = '';
+    let tripDays = 0;
+    if (endDate) {
+      const endDateObj = new Date(endDate);
+      formattedEndDate = endDateObj.toISOString().split('T')[0];
+      const diffMs = endDateObj.getTime() - startDateObj.getTime();
+      if (diffMs >= 0) {
+        tripDays = Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
+      }
+    }
+
+    // Период поездки одной строкой — для поискового запроса и промпта
+    const periodText = formattedEndDate
+      ? `с ${formattedStartDate} по ${formattedEndDate}${tripDays ? ` (${tripDays} дн.)` : ''}`
+      : `от ${formattedStartDate}`;
 
     // Формируем поисковый запрос для RAG
-    const searchQuery = `Путешествие в ${destination || 'Вьетнам'}, вылет из ${departureCity}, дата ${date}, бюджет ${budget}$. Темы: виза, страховка, билеты, отель, трансфер, связь, вещи, аэропорт.`;
+    const searchQuery = `Путешествие в ${destination || 'Вьетнам'}, вылет из ${departureCity}, период ${periodText}, бюджет ${budget}$. Темы: виза, страховка, билеты, отель, трансфер, связь, вещи, аэропорт.`;
 
     // Выполняем RAG-поиск релевантных документов
     const { context, usedRag, ragReason } = await retrieveContext(searchQuery);
@@ -156,13 +172,13 @@ ${context}
       console.warn('⚠️ RAG не сработал, используем общие знания модели (возможны галлюцинации)');
     }
 
-    const prompt = `Сгенерируй пошаговый план путешествия в ${destination || 'Вьетнам'} на ${date} с бюджетом ${budget}$. Вылет из ${departureCity}.
+    const prompt = `Сгенерируй пошаговый план путешествия в ${destination || 'Вьетнам'}${tripDays ? ` на ${tripDays} дней` : ''} с бюджетом ${budget}$. Вылет из ${departureCity}.
 
 ${ragContext}
 ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступна. Возможны неточности. Проверяйте всю информацию.' : ''}
 
 - Маршрут: ${departureCity} → ${destination || 'Вьетнам'}
-- Дата вылета: ${formattedDate}
+- Период поездки: ${periodText}
 
 Сгенерируй пошаговый план для путешественника-новичка, у которого нет опыта за границей. Разбей план на конкретные, выполнимые шаги (виза, билеты, страховка, отель, трансфер, связь, вещи, аэропорт). Каждый шаг должен содержать четкие действия и ссылки.
 
