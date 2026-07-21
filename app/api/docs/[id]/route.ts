@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { checkAdminAuth, unauthorizedResponse } from '@/lib/admin-auth';
-
-const CATEGORIES = ['general', 'visa', 'insurance', 'telecom', 'airport', 'hotel'] as const;
+import { CATEGORIES, COUNTRIES } from '@/lib/constants';
 
 /** Контекст динамического маршрута /api/docs/[id] — params это Promise в Next.js 16. */
 async function parseId(ctx: { params: Promise<{ id: string }> }): Promise<number | null> {
@@ -34,7 +33,7 @@ export async function GET(
 
   const { data, error } = await supabase
     .from('raw_documents')
-    .select('id, title, category, content, is_published, updated_at, last_indexed_at')
+    .select('id, title, category, country, content, is_published, updated_at, last_indexed_at')
     .eq('id', id)
     .single();
 
@@ -72,6 +71,7 @@ export async function PATCH(
   let body: {
     title?: string;
     category?: string;
+    country?: string;
     content?: string;
     is_published?: boolean;
   };
@@ -94,6 +94,12 @@ export async function PATCH(
     }
     patch.category = body.category;
   }
+  if (body.country !== undefined) {
+    if (!(COUNTRIES as readonly string[]).includes(body.country)) {
+      return NextResponse.json({ error: `country должен быть одним из: ${COUNTRIES.join(', ')}` }, { status: 400 });
+    }
+    patch.country = body.country;
+  }
   if (body.content !== undefined) {
     const c = body.content.trim();
     if (!c) return NextResponse.json({ error: 'content не может быть пустым' }, { status: 400 });
@@ -111,7 +117,7 @@ export async function PATCH(
     .from('raw_documents')
     .update(patch)
     .eq('id', id)
-    .select('id, title, category, is_published, updated_at, last_indexed_at')
+    .select('id, title, category, country, is_published, updated_at, last_indexed_at')
     .single();
 
   if (error) {

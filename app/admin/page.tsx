@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { CATEGORIES, COUNTRIES, DEFAULT_COUNTRY, type Category, type Country } from '@/lib/constants';
 
 /**
  * Админ-страница базы знаний: управление документами (CRUD) и переиндексация
@@ -12,9 +13,6 @@ import Link from 'next/link';
  *
  * Маршрут: /admin
  */
-
-const CATEGORIES = ['general', 'visa', 'insurance', 'telecom', 'airport', 'hotel'] as const;
-type Category = (typeof CATEGORIES)[number];
 
 const CATEGORY_LABELS: Record<Category, string> = {
   general: 'общее',
@@ -38,6 +36,7 @@ interface Doc {
   id: number;
   title: string;
   category: Category;
+  country: string;
   is_published: boolean;
   updated_at: string;
   last_indexed_at: string | null;
@@ -47,11 +46,15 @@ interface ModalState {
   id: number | null; // null = создание нового
   title: string;
   category: Category;
+  country: Country;
   content: string;
   is_published: boolean;
 }
 
 const PW_KEY = 'admin_password';
+
+/** Размер страницы списка документов (совпадает с дефолтом API). */
+const PAGE_SIZE = 50;
 
 /** Embeddings устарели: контент менялся после последней переиндексации. */
 function isStale(doc: Doc): boolean {
@@ -77,6 +80,8 @@ export default function AdminPage() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [docs, setDocs] = useState<Doc[]>([]);
+  const [total, setTotal] = useState(0);
+  const [countryFilter, setCountryFilter] = useState<string>('');
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,23 +105,49 @@ export default function AdminPage() {
     [password]
   );
 
-  const loadDocs = useCallback(async (): Promise<boolean> => {
+  const loadDocs = useCallback(
+    async (filterOverride?: string): Promise<boolean> => {
+      setLoadingDocs(true);
+      setError(null);
+      // filterOverride — чтобы применить новый фильтр сразу в onChange (state ещё не обновился).
+      const f = filterOverride !== undefined ? filterOverride : countryFilter;
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: '0' });
+      if (f) params.set('country', f);
+      const res = await api(`/api/docs?${params.toString()}`);
+      if (res.status === 401) {
+        setAuthed(false);
+        return false;
+      }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error || `Ошибка ${res.status}`);
+        return false;
+      }
+      const data = await res.json();
+      setDocs(data.documents ?? []);
+      setTotal(data.total ?? 0);
+      return true;
+    },
+    [api, countryFilter]
+  );
+
+  /** Догрузить следующую страницу (offset = сколько уже показано). */
+  const loadMore = useCallback(async () => {
     setLoadingDocs(true);
     setError(null);
-    const res = await api('/api/docs');
-    if (res.status === 401) {
-      setAuthed(false);
-      return false;
-    }
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(docs.length) });
+    if (countryFilter) params.set('country', countryFilter);
+    const res = await api(`/api/docs?${params.toString()}`);
+    setLoadingDocs(false);
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       setError(d.error || `Ошибка ${res.status}`);
-      return false;
+      return;
     }
     const data = await res.json();
-    setDocs(data.documents ?? []);
-    return true;
-  }, [api]);
+    setDocs((cur) => [...cur, ...(data.documents ?? [])]);
+    setTotal(data.total ?? 0);
+  }, [api, countryFilter, docs.length]);
 
   // Bootstrap при монтировании: если пароль сохранён в localStorage — проверяем
   // и входим автоматически. localStorage доступен только на клиенте, поэтому
@@ -136,6 +167,7 @@ export default function AdminPage() {
           setAuthed(true);
           const data = await res.json();
           setDocs(data.documents ?? []);
+          setTotal(data.total ?? 0);
         }
       })
       .finally(() => setAuthChecking(false));
@@ -159,6 +191,7 @@ export default function AdminPage() {
     localStorage.setItem(PW_KEY, password);
     const data = await res.json();
     setDocs(data.documents ?? []);
+    setTotal(data.total ?? 0);
     setAuthed(true);
   };
 
@@ -167,10 +200,12 @@ export default function AdminPage() {
     setPassword('');
     setAuthed(false);
     setDocs([]);
+    setTotal(0);
+    setCountryFilter('');
   };
 
   const openNew = () => {
-    setModal({ id: null, title: '', category: 'general', content: '', is_published: true });
+    setModal({ id: null, title: '', category: 'general', country: DEFAULT_COUNTRY, content: '', is_published: true });
   };
 
   const openEdit = (doc: Doc) => {
@@ -180,6 +215,7 @@ export default function AdminPage() {
       id: doc.id,
       title: doc.title,
       category: doc.category,
+      country: (COUNTRIES as readonly string[]).includes(doc.country) ? (doc.country as Country) : DEFAULT_COUNTRY,
       content: '', // догрузим ниже
       is_published: doc.is_published,
     });
@@ -204,6 +240,7 @@ export default function AdminPage() {
       const body = {
         title: modal.title.trim(),
         category: modal.category,
+        country: modal.country,
         content: modal.content,
         is_published: modal.is_published,
       };
@@ -319,16 +356,36 @@ export default function AdminPage() {
               </Link>
             </div>
           </div>
-          <p className="text-gray-600 dark:text-gray-300 mb-6">
-            {docs.length} {pluralize(docs.length)} · правки контента → кнопка 🔄 обновит embeddings
+          <p className="text-gray-600 dark:text-gray-300 mb-4">
+            {total} {pluralize(total)}
+            {docs.length < total ? ` · показано ${docs.length}` : ''}
+            {' · '}правки контента → кнопка 🔄 обновит embeddings
           </p>
 
-          <button
-            onClick={openNew}
-            className="mb-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-semibold py-3 px-6 rounded-lg transition shadow-lg"
-          >
-            + Новый документ
-          </button>
+          <div className="flex items-center gap-3 mb-6 flex-wrap">
+            <button
+              onClick={openNew}
+              className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-semibold py-3 px-6 rounded-lg transition shadow-lg"
+            >
+              + Новый документ
+            </button>
+            <select
+              value={countryFilter}
+              onChange={(e) => {
+                setCountryFilter(e.target.value);
+                loadDocs(e.target.value);
+              }}
+              className="px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+              title="Фильтр по стране"
+            >
+              <option value="">Все страны</option>
+              {COUNTRIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
 
           {loadingDocs && docs.length === 0 && (
             <p className="text-gray-500 dark:text-gray-400">Загрузка…</p>
@@ -355,6 +412,11 @@ export default function AdminPage() {
                         <span className={`text-xs font-medium px-2 py-0.5 rounded ${CATEGORY_COLORS[doc.category]}`}>
                           {CATEGORY_LABELS[doc.category]}
                         </span>
+                        {doc.country && (
+                          <span className="text-xs font-medium px-2 py-0.5 rounded bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300">
+                            🌍 {doc.country}
+                          </span>
+                        )}
                         {!doc.is_published && (
                           <span className="text-xs font-medium px-2 py-0.5 rounded bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
                             черновик
@@ -411,6 +473,18 @@ export default function AdminPage() {
                 Документов пока нет. Нажмите «+ Новый документ».
               </div>
             )}
+
+            {docs.length < total && (
+              <div className="flex justify-center pt-2">
+                <button
+                  onClick={loadMore}
+                  disabled={loadingDocs}
+                  className="px-5 py-2.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+                >
+                  {loadingDocs ? 'Загрузка…' : `Показать ещё (осталось ${total - docs.length})`}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -452,6 +526,22 @@ export default function AdminPage() {
                     {CATEGORIES.map((c) => (
                       <option key={c} value={c}>
                         {CATEGORY_LABELS[c]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Страна
+                  </label>
+                  <select
+                    value={modal.country}
+                    onChange={(e) => setModal({ ...modal, country: e.target.value as Country })}
+                    className="px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                  >
+                    {COUNTRIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
                       </option>
                     ))}
                   </select>

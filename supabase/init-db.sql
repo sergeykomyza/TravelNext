@@ -8,24 +8,30 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS documents (
   id SERIAL PRIMARY KEY,
   content TEXT NOT NULL,
-  embedding vector(384), -- для локальных эмбеддингов (all-MiniLM-L6-v2)
+  embedding vector(384), -- для локальных эмбеддингов (paraphrase-multilingual-MiniLM-L12-v2, 384 dim)
   source_file TEXT,
+  country TEXT, -- фильтр поиска по стране (см. match_documents.filter_country)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Создаём индекс для быстрого векторного поиска (опционально)
--- COMMENT THIS OUT IF YOU HAVE <100 documents (not needed for small datasets)
--- CREATE INDEX IF NOT EXISTS documents_embedding_idx ON documents USING ivfflat (embedding vector_cosine_ops);
+-- 3. Векторный индекс для быстрого поиска (HNSW). Включайте при росте объёма
+--    (тысячи чанков); для маленькой БД index не обязателен. Полная миграция со
+--    страной и индексом — supabase/add-country-and-hnsw.sql.
+-- CREATE INDEX IF NOT EXISTS documents_embedding_hnsw_idx ON documents USING hnsw (embedding vector_cosine_ops);
 
 -- 4. Создаём RPC функцию для векторного поиска
 -- ВАЖНО: DROP сначала — CREATE OR REPLACE не может изменить тип возврата,
 -- а documents.id имеет тип integer (SERIAL), не bigint.
+-- Актуальная RPC (с JOIN raw_documents и фильтром is_published) определяется
+-- в migrate-docs-to-ui.sql и обновляется в add-country-and-hnsw.sql.
 DROP FUNCTION IF EXISTS match_documents(vector(384), float, int);
+DROP FUNCTION IF EXISTS match_documents(vector(384), float, int, text);
 
 CREATE FUNCTION match_documents(
   query_embedding vector(384),
   match_threshold float DEFAULT 0.5,
-  match_count int DEFAULT 5
+  match_count int DEFAULT 5,
+  filter_country text DEFAULT NULL
 )
 RETURNS TABLE (
   id integer,
@@ -44,6 +50,7 @@ BEGIN
     1 - (documents.embedding <=> query_embedding) AS similarity
   FROM documents
   WHERE 1 - (documents.embedding <=> query_embedding) > match_threshold
+    AND (filter_country IS NULL OR documents.country = filter_country)
   ORDER BY documents.embedding <=> query_embedding
   LIMIT match_count;
 END;

@@ -55,6 +55,8 @@ export interface RawDocument {
   id: number;
   title: string;
   content: string;
+  /** Страна документа — пробрасывается в каждый чанк для фильтра match_documents.filter_country. */
+  country?: string | null;
 }
 
 /**
@@ -75,16 +77,23 @@ export async function reindexDocument(
     .eq('raw_document_id', doc.id);
   if (delError) throw delError;
 
-  // 2. Чанкуем и для каждого чанка генерируем embedding + вставляем строку.
+  // 2. Чанкуем, для каждого чанка генерируем embedding и собираем строки для батча.
+  //    Эмбеддинги — последовательно (ONNX-пайплайн однопоточный на инстансе, Promise.all
+  //    выигрыша не даст), а вот вставку делаем одним запросом: round-trips к БД N → 1.
   const chunks = chunkText(doc.content);
-  for (const chunk of chunks) {
-    const embedding = await getEmbedding(chunk);
-    const { error: insertError } = await supabase.from('documents').insert({
-      content: chunk,
-      embedding: JSON.stringify(embedding),
-      source_file: doc.title, // сохраняем для совместимости со старой логикой сборки в generate-plan
-      raw_document_id: doc.id,
-    });
+  const rows = chunks.map((chunk) => ({
+    content: chunk,
+    embedding: '', // заполним ниже после getEmbedding
+    source_file: doc.title, // для совместимости со старой логикой сборки в generate-plan
+    raw_document_id: doc.id,
+    country: doc.country ?? null,
+  }));
+  for (const row of rows) {
+    row.embedding = JSON.stringify(await getEmbedding(row.content));
+  }
+
+  if (rows.length > 0) {
+    const { error: insertError } = await supabase.from('documents').insert(rows);
     if (insertError) throw insertError;
   }
 

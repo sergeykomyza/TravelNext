@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { checkAdminAuth, unauthorizedResponse } from '@/lib/admin-auth';
+import { CATEGORIES, COUNTRIES, DEFAULT_COUNTRY, type Category, type Country } from '@/lib/constants';
+
+/** Дефолтный и максимальный размер страницы списка документов. */
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
 
 /**
- * GET /api/docs[?category=visa]
+ * GET /api/docs[?category=visa][&country=Вьетнам][&limit=50][&offset=0]
  * Список документов с метаданными переиндексации (updated_at, last_indexed_at),
  * чтобы UI мог показывать «embeddings устарели». Контент НЕ отдаём (тяжёлый).
+ * Пагинация limit/offset — чтобы админка не тянула тысячи строк разом.
  */
 export async function GET(request: NextRequest) {
   if (!checkAdminAuth(request)) return unauthorizedResponse();
@@ -15,25 +21,31 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Supabase не подключена' }, { status: 503 });
   }
 
-  const category = request.nextUrl.searchParams.get('category');
+  const params = request.nextUrl.searchParams;
+  const category = params.get('category');
+  const country = params.get('country');
+
+  const limit = Math.min(Math.max(Number(params.get('limit')) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const offset = Math.max(Number(params.get('offset')) || 0, 0);
+
   let query = supabase
     .from('raw_documents')
-    .select('id, title, category, is_published, updated_at, last_indexed_at')
-    .order('updated_at', { ascending: false });
+    .select('id, title, category, country, is_published, updated_at, last_indexed_at', {
+      count: 'exact',
+    })
+    .order('updated_at', { ascending: false })
+    .range(offset, offset + limit - 1);
 
   if (category) query = query.eq('category', category);
+  if (country) query = query.eq('country', country);
 
-  const { data, error } = await query;
+  const { data, count, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ documents: data });
+  return NextResponse.json({ documents: data ?? [], total: count ?? 0, limit, offset });
 }
 
-/** Допустимые категории (совпадают со скриптом миграции). */
-const CATEGORIES = ['general', 'visa', 'insurance', 'telecom', 'airport', 'hotel'] as const;
-type Category = (typeof CATEGORIES)[number];
-
 /**
- * POST /api/docs  { title, category?, content, is_published? }
+ * POST /api/docs  { title, category?, country?, content, is_published? }
  * Создаёт новый документ. Embeddings НЕ генерируются — после создания UI должен
  * предложить переиндексацию (POST /api/reindex-doc { docId }).
  */
@@ -48,6 +60,7 @@ export async function POST(request: NextRequest) {
   let body: {
     title?: string;
     category?: string;
+    country?: string;
     content?: string;
     is_published?: boolean;
   };
@@ -72,15 +85,21 @@ export async function POST(request: NextRequest) {
       ? (body.category as Category)
       : 'general';
 
+  const country: Country =
+    body.country && (COUNTRIES as readonly string[]).includes(body.country)
+      ? (body.country as Country)
+      : DEFAULT_COUNTRY;
+
   const { data, error } = await supabase
     .from('raw_documents')
     .insert({
       title,
       category,
+      country,
       content,
       is_published: body.is_published ?? true,
     })
-    .select('id, title, category, is_published, updated_at, last_indexed_at')
+    .select('id, title, category, country, is_published, updated_at, last_indexed_at')
     .single();
 
   if (error) {

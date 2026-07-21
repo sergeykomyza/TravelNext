@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getSupabase } from '../lib/supabase';
 import { reindexDocument } from '../lib/reindex';
+import { DEFAULT_COUNTRY } from '../lib/constants';
 
 // tsx сам .env не грузит
 dotenv.config({ path: '.env.local' });
@@ -93,18 +94,21 @@ async function main(): Promise<void> {
 
     try {
       // Upsert по title (уникальный ключ). Повторный запуск обновит content/updated_at.
+      // country = DEFAULT_COUNTRY: knowledge_base плоская, весь контент про Вьетнам.
+      // TODO: выводить страну из подпапки knowledge_base/<country>/ при мульти-странах.
       const { data: doc, error: upsertError } = await supabase!
         .from('raw_documents')
         .upsert(
           {
             title,
             category: guessCategory(fileName),
+            country: DEFAULT_COUNTRY,
             content,
             is_published: true,
           },
           { onConflict: 'title' }
         )
-        .select('id, title, content')
+        .select('id, title, content, country')
         .single();
 
       if (upsertError) throw upsertError;
@@ -114,6 +118,7 @@ async function main(): Promise<void> {
         id: doc.id,
         title: doc.title,
         content: doc.content,
+        country: doc.country ?? DEFAULT_COUNTRY,
       });
 
       migrated++;
