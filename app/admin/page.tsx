@@ -8,8 +8,9 @@ import { CATEGORIES, COUNTRIES, DEFAULT_COUNTRY, type Category, type Country } f
  * Админ-страница базы знаний: управление документами (CRUD) и переиндексация
  * embeddings — всё в браузере, без открытия терминала или Supabase Dashboard.
  *
- * Защита: один пароль из env (ADMIN_PASSWORD), хранится в localStorage и
- * отправляется в заголовке x-admin-password. API проверяет его на сервере.
+ * Защита: один пароль из env (ADMIN_PASSWORD), отправляется в заголовке
+ * x-admin-password. API проверяет его на сервере. Пароль НЕ сохраняется
+ * в localStorage для безопасности от XSS атак.
  *
  * Маршрут: /admin
  */
@@ -149,28 +150,18 @@ export default function AdminPage() {
     setTotal(data.total ?? 0);
   }, [api, countryFilter, docs.length]);
 
-  // Bootstrap при монтировании: если пароль сохранён в localStorage — проверяем
-  // и входим автоматически. localStorage доступен только на клиенте, поэтому
-  // чтение и первый запрос идут в effect; setState здесь неизбежен для
-  // client-side auth без SSR-данных (как и в TokenStatsContext проекта).
+  // Bootstrap при монтировании: чистим старый пароль из localStorage если он там
+  // остался от предыдущей версии системы безопасности.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem(PW_KEY) : null;
-    if (!saved) {
-      setAuthChecking(false);
-      return;
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(PW_KEY);
+      if (saved) {
+        console.warn('Очищен устаревший пароль из localStorage (безопасность)');
+        localStorage.removeItem(PW_KEY);
+      }
     }
-    setPassword(saved);
-    fetch('/api/docs', { headers: { 'x-admin-password': saved } })
-      .then(async (res) => {
-        if (res.ok) {
-          setAuthed(true);
-          const data = await res.json();
-          setDocs(data.documents ?? []);
-          setTotal(data.total ?? 0);
-        }
-      })
-      .finally(() => setAuthChecking(false));
+    setAuthChecking(false);
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -188,7 +179,6 @@ export default function AdminPage() {
       setAuthError(`Ошибка сервера: ${res.status}`);
       return;
     }
-    localStorage.setItem(PW_KEY, password);
     const data = await res.json();
     setDocs(data.documents ?? []);
     setTotal(data.total ?? 0);

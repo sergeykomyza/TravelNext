@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { checkAdminAuth, unauthorizedResponse } from '@/lib/admin-auth';
 import { CATEGORIES, COUNTRIES, DEFAULT_COUNTRY, type Category, type Country } from '@/lib/constants';
+import { documentSchema, validationErrorResponse } from '@/lib/validation';
 
 /** Дефолтный и максимальный размер страницы списка документов. */
 const DEFAULT_LIMIT = 50;
@@ -40,7 +41,10 @@ export async function GET(request: NextRequest) {
   if (country) query = query.eq('country', country);
 
   const { data, count, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('Ошибка при получении списка документов:', error);
+    return NextResponse.json({ error: 'Ошибка при получении списка документов' }, { status: 500 });
+  }
   return NextResponse.json({ documents: data ?? [], total: count ?? 0, limit, offset });
 }
 
@@ -57,38 +61,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Supabase не подключена' }, { status: 503 });
   }
 
-  let body: {
-    title?: string;
-    category?: string;
-    country?: string;
-    content?: string;
-    is_published?: boolean;
-  };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: 'Невалидный JSON' }, { status: 400 });
   }
 
-  const title = body.title?.trim();
-  const content = body.content?.trim();
-
-  if (!title) {
-    return NextResponse.json({ error: 'title обязательный' }, { status: 400 });
+  // Валидация через Zod
+  const validationResult = documentSchema.safeParse(body);
+  if (!validationResult.success) {
+    return NextResponse.json(
+      validationErrorResponse(validationResult.error),
+      { status: 400 }
+    );
   }
-  if (!content) {
-    return NextResponse.json({ error: 'content обязательный' }, { status: 400 });
-  }
 
-  const category: Category =
-    body.category && (CATEGORIES as readonly string[]).includes(body.category)
-      ? (body.category as Category)
-      : 'general';
-
-  const country: Country =
-    body.country && (COUNTRIES as readonly string[]).includes(body.country)
-      ? (body.country as Country)
-      : DEFAULT_COUNTRY;
+  const { title, category, country, content, is_published } = validationResult.data;
 
   const { data, error } = await supabase
     .from('raw_documents')
@@ -97,7 +86,7 @@ export async function POST(request: NextRequest) {
       category,
       country,
       content,
-      is_published: body.is_published ?? true,
+      is_published,
     })
     .select('id, title, category, country, is_published, updated_at, last_indexed_at')
     .single();
@@ -110,7 +99,7 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       );
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Ошибка при создании документа' }, { status: 500 });
   }
 
   return NextResponse.json({ document: data }, { status: 201 });

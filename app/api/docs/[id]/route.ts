@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { checkAdminAuth, unauthorizedResponse } from '@/lib/admin-auth';
-import { CATEGORIES, COUNTRIES } from '@/lib/constants';
+import { documentPatchSchema, validationErrorResponse } from '@/lib/validation';
 
 /** Контекст динамического маршрута /api/docs/[id] — params это Promise в Next.js 16. */
 async function parseId(ctx: { params: Promise<{ id: string }> }): Promise<number | null> {
@@ -38,10 +38,11 @@ export async function GET(
     .single();
 
   if (error) {
+    console.error('Ошибка при получении документа:', error);
     if (error.code === 'PGRST116') {
       return NextResponse.json({ error: `Документ id=${id} не найден` }, { status: 404 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Ошибка при получении документа' }, { status: 500 });
   }
 
   return NextResponse.json(data);
@@ -68,52 +69,36 @@ export async function PATCH(
     return NextResponse.json({ error: 'id должен быть целым положительным числом' }, { status: 400 });
   }
 
-  let body: {
-    title?: string;
-    category?: string;
-    country?: string;
-    content?: string;
-    is_published?: boolean;
-  };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: 'Невалидный JSON' }, { status: 400 });
   }
 
-  // Собираем только переданные поля
+  // Валидация через Zod (частичная схема)
+  const validationResult = documentPatchSchema.safeParse(body);
+  if (!validationResult.success) {
+    return NextResponse.json(
+      validationErrorResponse(validationResult.error),
+      { status: 400 }
+    );
+  }
+
+  // Удаляем undefined поля
   const patch: Record<string, unknown> = {};
-  if (body.title !== undefined) {
-    const t = body.title.trim();
-    if (!t) return NextResponse.json({ error: 'title не может быть пустым' }, { status: 400 });
-    patch.title = t;
-  }
-  if (body.category !== undefined) {
-    if (!(CATEGORIES as readonly string[]).includes(body.category)) {
-      return NextResponse.json({ error: `category должен быть одним из: ${CATEGORIES.join(', ')}` }, { status: 400 });
-    }
-    patch.category = body.category;
-  }
-  if (body.country !== undefined) {
-    if (!(COUNTRIES as readonly string[]).includes(body.country)) {
-      return NextResponse.json({ error: `country должен быть одним из: ${COUNTRIES.join(', ')}` }, { status: 400 });
-    }
-    patch.country = body.country;
-  }
-  if (body.content !== undefined) {
-    const c = body.content.trim();
-    if (!c) return NextResponse.json({ error: 'content не может быть пустым' }, { status: 400 });
-    patch.content = c;
-  }
-  if (body.is_published !== undefined) {
-    patch.is_published = Boolean(body.is_published);
-  }
+  const data = validationResult.data;
+  if (data.title !== undefined) patch.title = data.title;
+  if (data.category !== undefined) patch.category = data.category;
+  if (data.country !== undefined) patch.country = data.country;
+  if (data.content !== undefined) patch.content = data.content;
+  if (data.is_published !== undefined) patch.is_published = data.is_published;
 
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ error: 'Нет полей для обновления' }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data: result, error } = await supabase
     .from('raw_documents')
     .update(patch)
     .eq('id', id)
@@ -127,10 +112,10 @@ export async function PATCH(
     if (error.code === 'PGRST116') {
       return NextResponse.json({ error: `Документ id=${id} не найден` }, { status: 404 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Ошибка при обновлении документа' }, { status: 500 });
   }
 
-  return NextResponse.json({ document: data });
+  return NextResponse.json({ document: result });
 }
 
 /**
@@ -159,7 +144,8 @@ export async function DELETE(
     .eq('id', id);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('Ошибка при удалении документа:', error);
+    return NextResponse.json({ error: 'Ошибка при удалении документа' }, { status: 500 });
   }
   if (!count || count === 0) {
     return NextResponse.json({ error: `Документ id=${id} не найден` }, { status: 404 });

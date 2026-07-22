@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { checkAdminAuth, unauthorizedResponse } from '@/lib/admin-auth';
+import { reindexSchema, validationErrorResponse } from '@/lib/validation';
 
 // Vercel serverless: переиндексация грузит модель ONNX (@xenova/transformers),
 // холодный старт требует запаса по времени — иначе первый запрос упирается в таймаут.
@@ -31,7 +32,8 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await query;
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('Ошибка при получении списка документов:', error);
+    return NextResponse.json({ error: 'Ошибка при получении списка документов' }, { status: 500 });
   }
   return NextResponse.json({ documents: data });
 }
@@ -52,19 +54,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let docId: unknown;
+  let body: unknown;
   try {
-    const body = await request.json();
-    docId = body?.docId;
+    body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Тело запроса должно быть JSON: { "docId": <number> }' }, { status: 400 });
+    return NextResponse.json({ error: 'Тело запроса должно быть JSON' }, { status: 400 });
   }
 
-  // Валидация: docId — целое положительное число
-  const id = Number(docId);
-  if (!Number.isInteger(id) || id <= 0) {
-    return NextResponse.json({ error: 'docId должен быть целым положительным числом' }, { status: 400 });
+  // Валидация через Zod
+  const validationResult = reindexSchema.safeParse(body);
+  if (!validationResult.success) {
+    return NextResponse.json(
+      validationErrorResponse(validationResult.error),
+      { status: 400 }
+    );
   }
+
+  const { docId: id } = validationResult.data;
 
   // Достаём актуальный контент документа
   const { data: doc, error: docError } = await supabase
@@ -101,7 +107,7 @@ export async function POST(request: NextRequest) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(`❌ Reindex failed для docId=${id}:`, msg);
     return NextResponse.json(
-      { error: 'Переиндексация не удалась', details: msg.split('\n')[0].slice(0, 200) },
+      { error: 'Ошибка при переиндексации документа' },
       { status: 500 }
     );
   }
