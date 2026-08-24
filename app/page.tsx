@@ -107,18 +107,36 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Валидация на клиенте
+    const budgetValue = Number(formData.budget);
+    if (!formData.startDate) {
+      setError('Укажите дату начала поездки');
+      return;
+    }
+    if (budgetValue <= 0) {
+      setError('Бюджет должен быть положительным числом');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setTravelPlan(null);
     setUsedRag(null);
 
     try {
+      // Преобразуем budget из строки в число для валидации
+      const requestData = {
+        ...formData,
+        budget: budgetValue,
+      };
+
       const response = await fetch('/api/generate-plan', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(requestData),
       });
 
       if (!response.ok) {

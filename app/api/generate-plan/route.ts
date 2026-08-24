@@ -197,6 +197,8 @@ export async function POST(request: NextRequest) {
     // Валидация входных данных
     const validationResult = generatePlanSchema.safeParse(body);
     if (!validationResult.success) {
+      console.error('❌ Ошибка валидации:', JSON.stringify(validationResult.error, null, 2));
+      console.error('Полученные данные:', JSON.stringify(body, null, 2));
       return NextResponse.json(
         validationErrorResponse(validationResult.error),
         { status: 400 }
@@ -399,8 +401,14 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
     });
 
     // Anthropic Messages API возвращает content как массив блоков
-    const textBlock = response.content.find((block) => block.type === 'text');
-    const content = textBlock && 'text' in textBlock ? textBlock.text : '';
+    // Добавляем защитную проверку на случай нестандартного ответа
+    let content = '';
+    if (response.content && Array.isArray(response.content) && response.content.length > 0) {
+      const textBlock = response.content.find((block) => block.type === 'text');
+      content = textBlock && 'text' in textBlock ? textBlock.text : '';
+    } else {
+      console.warn('⚠️ Нестандартный формат ответа от API:', response);
+    }
 
     // Логируем сырой ответ для отладки (stop_reason покажет truncation по max_tokens)
     console.log('📝 Сырой ответ от модели (stop_reason=%s, первые 500 символов):', response.stop_reason);
@@ -481,9 +489,52 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
       _tokenUsage: usage,
     });
   } catch (error) {
-    console.error('Error generating travel plan:', error);
+    console.error('❌ Error generating travel plan:', error);
+
+    // Детальное логирование для диагностики
+    if (error instanceof Error) {
+      console.error('Error name:', error.name);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+    }
+
+    // Проверяем специфичные ошибки API
+    if (error && typeof error === 'object') {
+      console.error('Full error object:', JSON.stringify(error, null, 2));
+      if ('status' in error) {
+        console.error('API status:', (error as { status: number }).status);
+      }
+      if ('message' in error) {
+        console.error('API error message:', (error as { message: string }).message);
+      }
+    }
+
+    // Проверяем специфичные ошибки для понятного сообщения пользователю
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    let userFriendlyError = 'Внутренняя ошибка сервера при генерации плана';
+
+    if (errorMessage.includes('rate_limit_error') || errorMessage.includes('Insufficient balance')) {
+      userFriendlyError = 'Ошибка API: недостаточно баланса или нет активного тарифного плана. Пожалуйста, пополните баланс на z.ai или проверьте настройки API ключа.';
+    } else if (errorMessage.includes('401') || errorMessage.includes('authentication')) {
+      userFriendlyError = 'Ошибка авторизации API: проверьте ANTHROPIC_API_KEY в настройках.';
+    } else if (errorMessage.includes('429') && !errorMessage.includes('Insufficient balance')) {
+      userFriendlyError = 'Слишком много запросов. Пожалуйста, подождите немного и попробуйте снова.';
+    }
+
+    // Возвращаем более информативную ошибку для отладки (только в dev)
+    const isDev = process.env.NODE_ENV === 'development';
+    const errorDetails = error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : String(error);
+
     return NextResponse.json(
-      { error: 'Внутренняя ошибка сервера при генерации плана' },
+      {
+        error: userFriendlyError,
+        ...(isDev && {
+          details: errorDetails,
+          type: error instanceof Error ? error.name : typeof error,
+        }),
+      },
       { status: 500 }
     );
   }

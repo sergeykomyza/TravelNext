@@ -30,19 +30,15 @@ export const generatePlanSchema = z.object({
     errorMap: () => ({ message: 'Некорректный пункт назначения' }),
   }).optional(),
   startDate: dateSchema,
-  endDate: dateSchema.optional().refine((endDate, ctx) => {
-    if (!endDate) return true;
-    const startDate = ctx.parent.startDate as string;
-    if (new Date(endDate) < new Date(startDate)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Дата возвращения не может быть раньше даты вылета',
-      });
-      return false;
-    }
-    return true;
-  }),
+  endDate: dateSchema.optional(),
   budget: positiveNumber,
+}).refine((data) => {
+  // Валидация логической связи между датами
+  if (!data.endDate) return true;
+  return new Date(data.endDate) >= new Date(data.startDate);
+}, {
+  message: 'Дата возвращения не может быть раньше даты вылета',
+  path: ['endDate'],
 });
 
 export type GeneratePlanInput = z.infer<typeof generatePlanSchema>;
@@ -86,9 +82,11 @@ export type DocumentPatchInput = z.infer<typeof documentPatchSchema>;
 export function validationErrorResponse(error: z.ZodError) {
   return {
     error: 'Некорректные данные запроса',
-    details: error.errors.map((e) => ({
-      field: e.path.join('.'),
-      message: e.message,
-    })),
+    details: Array.isArray(error.errors)
+      ? error.errors.map((e) => ({
+          field: Array.isArray(e.path) ? e.path.join('.') : String(e.path || ''),
+          message: e.message || 'Ошибка валидации',
+        }))
+      : [],
   };
 }
