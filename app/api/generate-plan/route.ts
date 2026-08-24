@@ -7,8 +7,9 @@ import { generatePlanSchema, validationErrorResponse } from '@/lib/validation';
 
 // Vercel serverless: холодный старт (@xenova/transformers + Anthropic) требует
 // запаса по времени, иначе первый запрос упирается в дефолтный таймаут функции.
-// Увеличено до 90 секунд для генерации плана с RAG
-export const maxDuration = 90;
+// Замер: генерация плана glm ~113с (см. curl-тест) + ~40с холодный старт с
+// повторной загрузкой модели (FS read-only, кэш на диск не пишется) → 300с.
+export const maxDuration = 300;
 
 /** Потолок размера RAG-контекста (символы) — защита от раздувания промпта. */
 const MAX_CONTEXT_CHARS = 30_000;
