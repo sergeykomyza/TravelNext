@@ -30,6 +30,8 @@ function getPipeline(): Promise<FeatureExtractionPipeline> {
         'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
         {
           quantized: true, // Использовать квантованную модель (меньше памяти)
+          // Отключаем кэширование модели в serverless среде
+          cache_dir: undefined, // Использовать временный кэш браузера, а не файловой системы
         }
       );
       embeddingPipeline = pipe;
@@ -37,7 +39,23 @@ function getPipeline(): Promise<FeatureExtractionPipeline> {
       return pipe;
     } catch (error) {
       console.error('❌ Ошибка загрузки модели:', error);
-      throw error;
+      // В serverless среде кэш может быть недоступен, пробуем без кэширования
+      try {
+        console.log('🔄 Повторная загрузка модели без кэширования...');
+        const pipe = await pipeline(
+          'feature-extraction',
+          'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
+          {
+            quantized: true,
+          }
+        );
+        embeddingPipeline = pipe;
+        console.log('✅ Модель эмбеддингов загружена (без кэша)');
+        return pipe;
+      } catch (retryError) {
+        console.error('❌ Критическая ошибка загрузки модели:', retryError);
+        throw retryError;
+      }
     }
   })();
 

@@ -7,7 +7,8 @@ import { generatePlanSchema, validationErrorResponse } from '@/lib/validation';
 
 // Vercel serverless: холодный старт (@xenova/transformers + Anthropic) требует
 // запаса по времени, иначе первый запрос упирается в дефолтный таймаут функции.
-export const maxDuration = 60;
+// Увеличено до 90 секунд для генерации плана с RAG
+export const maxDuration = 90;
 
 /** Потолок размера RAG-контекста (символы) — защита от раздувания промпта. */
 const MAX_CONTEXT_CHARS = 30_000;
@@ -108,6 +109,11 @@ async function retrieveContext(
       if (error.message.includes('function') || error.code === '42883') {
         console.warn('RAG: RPC функция match_documents не найдена. Выполните миграции supabase/ (init-db.sql → migrate-docs-to-ui.sql → add-reindex-tracking.sql → add-country-and-hnsw.sql)');
         return { context: '', usedRag: false, ragReason: 'no_match_documents_rpc' };
+      }
+      // Сетевые ошибки (DNS, timeout, etc.)
+      if (error.message.includes('fetch') || error.message.includes('ENOTFOUND') || error.message.includes('ECONNREFUSED')) {
+        console.warn('RAG: Сетевая ошибка при подключении к Supabase:', error.message);
+        return { context: '', usedRag: false, ragReason: 'supabase_network_error' };
       }
       throw error;
     }
