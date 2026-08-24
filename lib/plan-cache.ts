@@ -32,7 +32,7 @@ export interface PlanCacheParams {
   destination: string;
   startDate: string;
   endDate: string;
-  budget: string;
+  budget: number;
 }
 
 /** Стабильный ключ кэша из параметров маршрута. */

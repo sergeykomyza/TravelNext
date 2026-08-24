@@ -23,12 +23,8 @@ const DESTINATIONS = ['Вьетнам', 'Таиланд', 'Индонезия', 
 
 // Схема для генерации плана путешествия
 export const generatePlanSchema = z.object({
-  departureCity: z.enum(DEPARTURE_CITIES, {
-    errorMap: () => ({ message: 'Некорректный город вылета' }),
-  }),
-  destination: z.enum(DESTINATIONS, {
-    errorMap: () => ({ message: 'Некорректный пункт назначения' }),
-  }).optional(),
+  departureCity: z.enum(DEPARTURE_CITIES),
+  destination: z.enum(DESTINATIONS).optional(),
   startDate: dateSchema,
   endDate: dateSchema.optional(),
   budget: positiveNumber,
@@ -52,12 +48,8 @@ export const documentSchema = z.object({
     .refine((title) => !/<script|javascript:|onerror|onload/i.test(title), {
     message: 'Заголовок содержит недопустимые символы',
   }),
-  category: z.enum(CATEGORIES, {
-    errorMap: () => ({ message: 'Некорректная категория' }),
-  }),
-  country: z.enum(COUNTRIES, {
-    errorMap: () => ({ message: 'Некорректная страна' }),
-  }),
+  category: z.enum(CATEGORIES),
+  country: z.enum(COUNTRIES),
   content: nonEmptyString.max(100000, { message: 'Контент слишком большой' }),
   is_published: z.boolean().default(false),
 });
@@ -82,8 +74,8 @@ export type DocumentPatchInput = z.infer<typeof documentPatchSchema>;
 export function validationErrorResponse(error: z.ZodError) {
   return {
     error: 'Некорректные данные запроса',
-    details: Array.isArray(error.errors)
-      ? error.errors.map((e) => ({
+    details: Array.isArray(error.issues)
+      ? error.issues.map((e) => ({
           field: Array.isArray(e.path) ? e.path.join('.') : String(e.path || ''),
           message: e.message || 'Ошибка валидации',
         }))
