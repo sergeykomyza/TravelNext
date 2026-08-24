@@ -74,6 +74,9 @@ async function main(): Promise<void> {
         id: doc.id,
         title: doc.title,
         content: doc.content,
+        // doc приходит из RPC get_documents_to_reindex (add-reindex-tracking.sql) —
+        // там в SELECT нет country, поэтому подтягиваем из полной записи ниже.
+        country: (doc as { country?: string | null }).country ?? null,
       });
       chunksTotal += chunks;
       processed++;

@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   while (true) {
     const { data, count, error } = await supabase!
       .from('raw_documents')
-      .select('id, title, content', { count: 'exact' })
+      .select('id, title, content, country', { count: 'exact' })
       .order('id', { ascending: true })
       .range(from, from + PAGE - 1);
 
@@ -68,6 +68,7 @@ async function main(): Promise<void> {
           id: doc.id,
           title: doc.title,
           content: doc.content,
+          country: doc.country,
         });
         chunksTotal += chunks;
         processed++;

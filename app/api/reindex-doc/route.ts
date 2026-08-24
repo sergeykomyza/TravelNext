@@ -72,10 +72,13 @@ export async function POST(request: NextRequest) {
 
   const { docId: id } = validationResult.data;
 
-  // Достаём актуальный контент документа
+  // Достаём актуальный контент документа.
+  // country ОБЯЗАТЕЛЬНА в select: она пробрасывается в чанки для фильтра
+  // match_documents.filter_country. Без неё переиндексация обнуляет страну
+  // у чанков → RAG перестаёт находить документы этой страны.
   const { data: doc, error: docError } = await supabase
     .from('raw_documents')
-    .select('id, title, content')
+    .select('id, title, content, country')
     .eq('id', id)
     .single();
 
@@ -95,6 +98,7 @@ export async function POST(request: NextRequest) {
       id: doc.id,
       title: doc.title,
       content: doc.content,
+      country: doc.country,
     });
 
     console.log(`✅ Reindex: «${doc.title}» (id=${id}) → ${chunkCount} чанков`);
