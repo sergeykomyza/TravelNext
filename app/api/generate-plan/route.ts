@@ -63,6 +63,100 @@ function escapeControlCharsInJsonStrings(input: string): string {
   return out;
 }
 
+/**
+ * Экранирует НЕэкранированные кавычки ВНУТРИ строковых значений JSON.
+ *
+ * Зачем: база знаний полна цитат («...», "..."), модель копирует их в
+ * description/actions как есть — JSON.parse падает с "Unexpected token".
+ *
+ * Эвристика: кавычка внутри строки — настоящая закрывающая только если дальше
+ * (после пробелов/переносов) идёт , : } ] или конец ввода. Иначе это контент → \".
+ * Ложные срабатывания возможны, но функция применяется только к ответам,
+ * которые строгий парс уже отверг — там это лучше, чем сырой текст.
+ */
+function fixUnescapedQuotes(input: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  const n = input.length;
+  for (let i = 0; i < n; i++) {
+    const ch = input[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (inString && ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      if (!inString) {
+        inString = true;
+        out += ch;
+        continue;
+      }
+      let j = i + 1;
+      while (j < n && (input[j] === ' ' || input[j] === '\t' || input[j] === '\n' || input[j] === '\r')) j++;
+      const next = j < n ? input[j] : '';
+      if (next === ',' || next === ':' || next === '}' || next === ']' || next === '') {
+        inString = false;
+        out += ch;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  // Незакрытая строка на конце (обрыв генерации) — закрываем.
+  if (inString) out += '"';
+  return out;
+}
+
+/**
+ * Чинит ОБРЕЗАННЫЙ JSON (stop_reason=max_tokens): закрывает незакрытую строку
+ * и все незакрытые скобки в правильном порядке. Потеряется только «хвост»
+ * плана (пара последних шагов) — это лучше, чем весь ответ в сыром виде.
+ */
+function repairTruncatedJson(input: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+  let out = input;
+  if (inString) {
+    // Обрыв посреди escape-последовательности ("...\) — одиночный слэш «съест»
+    // закрывающую кавычку, поэтому срезаем непарный хвост слэшей.
+    out = out.replace(/\\+$/, (m) => (m.length % 2 === 1 ? m.slice(0, -1) : m));
+    out += '"';
+  }
+  while (stack.length > 0) out += stack.pop();
+  return out;
+}
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
   baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.z.ai/api/anthropic',
@@ -396,9 +490,11 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
       // z.ai обслуживает GLM-модели, не Claude. Валидные id: glm-5.2, glm-4.7,
       // glm-4.6, glm-4.5, glm-4.5-air (см. https://docs.z.ai). claude-* → 400 "Unknown Model".
       model: process.env.ANTHROPIC_MODEL || 'glm-4.6',
-      // Подробный план (8+ шагов с МАКСИМАЛЬНО детальными actions/links) на русском токеноёмок;
-      // Увеличили до 8000 для максимально подробных ответов с большим количеством действий
-      max_tokens: 8000,
+      // С подключённым RAG (до 30К симв. базы знаний) детальный план не влезает
+      // в 8000 — ответ обрывался посреди JSON (stop_reason=max_tokens).
+      // 12000 при ~60 t/s у GLM ≈ 200с — помещается в maxDuration=300 (холодный
+      // старт ~70с + генерация 200с). Ремонт обреза в parse-каскаде страхует остаточный риск.
+      max_tokens: 12000,
       messages: [
         {
           role: 'user',
@@ -425,22 +521,48 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
     // ответ, иначе в кэш на час ляжет fallback «неожиданный формат ответа».
     let jsonContent;
     let parseOk = false;
-    try {
-      // Убираем markdown-обёртку (```json ... ```), если модель её добавила —
-      // причём толерантно к пробелам/регистру (старая регулярка требовала \n сразу после json).
-      let cleaned = content.trim();
-      const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      if (fenceMatch) cleaned = fenceMatch[1].trim();
-      // Берём подстроку от первой { до последней } — отсекает лишний текст вокруг.
-      const firstBrace = cleaned.indexOf('{');
-      const lastBrace = cleaned.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    // Базовая очистка: markdown-обёртка (```json ... ```), толерантно к пробелам/регистру.
+    let cleaned = content.trim();
+    const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch) cleaned = fenceMatch[1].trim();
+    // Берём подстроку от первой { до последней } — отсекает лишний текст вокруг.
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+    // Модель иногда вставляет буквальные управляющие символы внутрь строковых
+    // значений — экранируем их (иначе JSON.parse падает с "Bad control character").
+    cleaned = escapeControlCharsInJsonStrings(cleaned);
+
+    // Каскад попыток: строгий парс → ремонт кавычек → ремонт обрыва (max_tokens).
+    // Каждая попытка — чистая функция над исходной строкой, первая удачная побеждает.
+    const truncated = response.stop_reason === 'max_tokens';
+    const attempts: { label: string; text: string }[] = [
+      { label: 'strict', text: cleaned },
+      { label: 'quotes-fixed', text: fixUnescapedQuotes(cleaned) },
+    ];
+    if (truncated) {
+      attempts.push({ label: 'truncated-repaired', text: fixUnescapedQuotes(repairTruncatedJson(cleaned)) });
+    }
+
+    let lastParseError: unknown = null;
+    for (const attempt of attempts) {
+      try {
+        jsonContent = JSON.parse(attempt.text);
+        if (attempt.label !== 'strict') {
+          console.log(`🔧 JSON распарсен после ремонта (${attempt.label})`);
+        } else {
+          console.log('✅ JSON успешно распарсен');
+        }
+        parseOk = true;
+        break;
+      } catch (e) {
+        lastParseError = e;
       }
-      // Модель иногда вставляет буквальные управляющие символы внутрь строковых
-      // значений — экранируем их (иначе JSON.parse падает с "Bad control character").
-      cleaned = escapeControlCharsInJsonStrings(cleaned);
-      jsonContent = JSON.parse(cleaned);
+    }
+
+    if (parseOk) {
       // Гарантируем массивы для UI — иначе .map падает при рендере
       if (!Array.isArray(jsonContent.steps)) jsonContent.steps = [];
       jsonContent.steps.forEach((s: Record<string, unknown>) => {
@@ -448,12 +570,13 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
         if (!Array.isArray(s.links)) s.links = [];
       });
       if (!Array.isArray(jsonContent.tips)) jsonContent.tips = [];
-      console.log('✅ JSON успешно распарсен');
-      parseOk = true;
-    } catch (parseError) {
-      // Если всё-таки не распарсилось — не оставляем страницу пустой:
+    } else {
+      // Если все попытки провалились — не оставляем страницу пустой:
       // кладём сырой ответ модели в один шаг, чтобы пользователь видел хоть что-то.
-      console.warn('⚠️  Не удалось распарсить JSON:', parseError);
+      // Логируем хвост ответа и причину — по ним видно, что именно сломало парс
+      // (обрыв посреди строки / кавычка в значении / вообще не JSON).
+      console.warn('⚠️  Не удалось распарсить JSON ни одной попыткой:', lastParseError);
+      console.warn(`⚠️  stop_reason=${response.stop_reason}, длина=${content.length}, последние 300 символов:`, content.slice(-300));
       jsonContent = {
         title: 'План путешествия',
         steps: [
