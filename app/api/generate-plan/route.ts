@@ -514,6 +514,12 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
       // 8000 при ~60 t/s ≈ 135с → суммарно влезает с запасом. Обрез по лимиту больше
       // не ломает план: parse-каскад ниже закрывает обрезанный JSON (repairTruncatedJson).
       max_tokens: 8000,
+      // КРИТИЧНО: GLM 5.x — гибридная reasoning-модель, thinking включён по умолчанию.
+      // Без этого флага модель тратила ВЕСЬ max_tokens на внутренние рассуждения,
+      // до текстового блока дело не доходило: stop_reason=max_tokens, content пустой
+      // («неожиданный формат» при полном ответе). Для структурированного JSON-плана
+      // reasoning не нужен, а его отключение ускоряет и удешевляет запрос.
+      thinking: { type: 'disabled' },
       messages: [
         {
           role: 'user',
@@ -528,6 +534,14 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
     if (response.content && Array.isArray(response.content) && response.content.length > 0) {
       const textBlock = response.content.find((block) => block.type === 'text');
       content = textBlock && 'text' in textBlock ? textBlock.text : '';
+      if (!content) {
+        // Текстового блока нет (или пустой) — показываем, ЧТО вернул API,
+        // чтобы отличить thinking-модель от смены формата ответа.
+        console.warn(
+          '⚠️ Текстовый блок пуст. Типы блоков в ответе:',
+          response.content.map((b) => b.type).join(', ')
+        );
+      }
     } else {
       console.warn('⚠️ Нестандартный формат ответа от API:', response);
     }
