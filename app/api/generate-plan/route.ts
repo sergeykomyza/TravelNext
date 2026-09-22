@@ -179,6 +179,25 @@ async function retrieveContext(
   }
 
   try {
+    // Быстрый pre-check ДО загрузки ONNX: если для страны нет опубликованных
+    // документов — векторный поиск заведомо пуст, а загрузка эмбеддинг-модели на
+    // холодном старте Vercel стоит 40–90с (модель качается заново: ФС read-only).
+    // Для стран без базы знаний (сейчас все, кроме Вьетнама) это срезает холодный
+    // старт целиком и спасает запрос от таймаута maxDuration.
+    // Замечание: легаси-чанки без raw_document_id здесь не учтены — все текущие
+    // чанки созданы через reindex и имеют связь с raw_documents.
+    if (country) {
+      const { count, error: cntError } = await supabase
+        .from('raw_documents')
+        .select('id', { count: 'exact', head: true })
+        .eq('country', country)
+        .eq('is_published', true);
+      if (!cntError && (count ?? 0) === 0) {
+        console.warn(`RAG: для страны «${country}» нет документов — пропускаем векторный поиск (экономия ~40-90с холодного старта)`);
+        return { context: '', usedRag: false, ragReason: 'no_docs_for_country' };
+      }
+    }
+
     // Динамический импорт изолирует тяжёлый ONNX-модуль (@xenova/transformers):
     // он подгружается только когда RAG реально нужен. Статический import тянул бы
     // onnxruntime-node на старте маршрута — в serverless нативные .so не bundled,
@@ -490,11 +509,11 @@ ${!usedRag ? '⚠️ ВНИМАНИЕ: База знаний недоступн�
       // z.ai обслуживает GLM-модели, не Claude. Валидные id: glm-5.2, glm-4.7,
       // glm-4.6, glm-4.5, glm-4.5-air (см. https://docs.z.ai). claude-* → 400 "Unknown Model".
       model: process.env.ANTHROPIC_MODEL || 'glm-4.6',
-      // С подключённым RAG (до 30К симв. базы знаний) детальный план не влезает
-      // в 8000 — ответ обрывался посреди JSON (stop_reason=max_tokens).
-      // 12000 при ~60 t/s у GLM ≈ 200с — помещается в maxDuration=300 (холодный
-      // старт ~70с + генерация 200с). Ремонт обреза в parse-каскаде страхует остаточный риск.
-      max_tokens: 12000,
+      // Бюджет времени: maxDuration=300с на Vercel. Замер: генерация ~10-12К токенов
+      // заняла 252с локально (запрос по Шри-Ланке) + 40-90с холодный старт = таймаут 504.
+      // 8000 при ~60 t/s ≈ 135с → суммарно влезает с запасом. Обрез по лимиту больше
+      // не ломает план: parse-каскад ниже закрывает обрезанный JSON (repairTruncatedJson).
+      max_tokens: 8000,
       messages: [
         {
           role: 'user',
